@@ -594,7 +594,7 @@
 				cache: 'no-store',
 			});
 		} catch {
-			throw new Error('No hay conexión con GitHub.');
+			throw new Error('No se pudo conectar con GitHub. Si tu internet está bien, el archivo puede ser demasiado pesado (máximo ~70 MB) o el token no es válido.');
 		}
 		if (res.status === 404 && (opts.method || 'GET') === 'GET') return null;
 		const data = await res.json().catch(() => ({}));
@@ -636,8 +636,56 @@
 		return null;
 	};
 
+
+	// Archivos pesados (hasta 2 GB): se suben como "Release" del repositorio
+	const ghApi = async (c, url, method = 'GET', body) => {
+		let res;
+		try {
+			res = await fetch(url, { method, headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${c.token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined, cache: 'no-store' });
+		} catch { throw new Error('No se pudo conectar con GitHub. Revisa tu internet.'); }
+		if (res.status === 404 && method === 'GET') return null;
+		const data = res.status === 204 ? {} : await res.json().catch(() => ({}));
+		if (!res.ok) {
+			if (res.status === 401) throw new Error('GitHub rechazó el token (401).');
+			if (res.status === 403 || res.status === 404) throw new Error('El token no tiene permiso para crear Releases. Edita el token y en Contents pon Read and write.');
+			throw new Error(data.message || `Error de GitHub (${res.status})`);
+		}
+		return data;
+	};
+	const ghRelease = async (c) => {
+		const api = `https://api.github.com/repos/${c.repo}/releases`;
+		let rel = await ghApi(c, `${api}/tags/archivos-catsfrost`);
+		if (!rel) rel = await ghApi(c, api, 'POST', { tag_name: 'archivos-catsfrost', target_commitish: c.branch, name: 'Archivos de Cats Frost', body: 'Videos y archivos pesados de la página.', draft: false, prerelease: false });
+		return rel;
+	};
+	const ghSaveBig = async (c, section, file, onStatus) => {
+		if (file.size > 2000 * 1048576) throw new Error('El archivo pesa más de 2 GB, que es el máximo de GitHub.');
+		onStatus('Preparando…');
+		const rel = await ghRelease(c);
+		const safe = `${Date.now().toString(36)}-${file.name.replace(/[^\w.-]+/g, '_').replace(/\.{2,}/g, '.').replace(/^\.+/, '') || 'archivo'}`;
+		const upUrl = `https://uploads.github.com/repos/${c.repo}/releases/${rel.id}/assets?name=${encodeURIComponent(safe)}`;
+		const asset = await new Promise((resolve, reject) => {
+			const xhr = new XMLHttpRequest();
+			xhr.open('POST', upUrl);
+			xhr.setRequestHeader('Authorization', `Bearer ${c.token}`);
+			xhr.setRequestHeader('Accept', 'application/vnd.github+json');
+			xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+			xhr.upload.onprogress = (e) => { if (e.lengthComputable) onStatus(`Subiendo… ${Math.round((e.loaded / e.total) * 100)}% (no cierres esta ventana)`); };
+			xhr.onload = () => {
+				if (xhr.status >= 200 && xhr.status < 300) { try { resolve(JSON.parse(xhr.responseText)); } catch { reject(new Error('Respuesta inesperada de GitHub.')); } } else reject(new Error(xhr.status === 401 || xhr.status === 403 ? 'El token no tiene permiso para subir archivos grandes (Contents: Read and write).' : `GitHub rechazó el archivo (error ${xhr.status}).`));
+			};
+			xhr.onerror = () => reject(new Error('No se pudo subir el archivo pesado. Revisa tu internet y vuelve a intentar.'));
+			xhr.send(file);
+		});
+		onStatus('Registrando en la biblioteca…');
+		const item = { id: safe, name: file.name, url: asset.browser_download_url, size: file.size, createdAt: new Date().toISOString(), asset: asset.id };
+		const lib = await ghUpdateManifest(c, (l) => { (l[section] = l[section] || []).push(item); });
+		['videos', 'trailer', 'descargas'].forEach((k) => { state.lib[k] = lib[k] || []; });
+		return item;
+	};
+
 	const ghSaveFile = async (c, section, file, onStatus) => {
-		if (file.size > 90 * 1048576) throw new Error('GitHub no admite archivos de más de 100 MB por la web. Comprime el video (por ejemplo a 720p) o reduce el archivo.');
+		if (file.size > 70 * 1048576) return ghSaveBig(c, section, file, onStatus);
 		const safe = `${Date.now().toString(36)}-${file.name.replace(/[^\w.-]+/g, '_').replace(/\.{2,}/g, '.').replace(/^\.+/, '') || 'archivo'}`;
 		const rel = `media/${section}/${safe}`;
 		onStatus('Leyendo archivo…');
@@ -654,10 +702,14 @@
 	async function ghDelete(item) {
 		const c = ghLoad();
 		if (!ghReady(c)) throw new Error('Primero configura GitHub (repositorio y token).');
-		const rel = item.path || item.url;
-		const fp = ghMediaPath(c, rel);
-		const cur = await ghCall(c, fp);
-		if (cur) await ghCall(c, fp, { method: 'DELETE', body: { message: `Borrar ${item.name}`, sha: cur.sha, branch: c.branch } });
+		if (item.asset) {
+			await ghApi(c, `https://api.github.com/repos/${c.repo}/releases/assets/${item.asset}`, 'DELETE');
+		} else {
+			const rel = item.path || item.url;
+			const fp = ghMediaPath(c, rel);
+			const cur = await ghCall(c, fp);
+			if (cur) await ghCall(c, fp, { method: 'DELETE', body: { message: `Borrar ${item.name}`, sha: cur.sha, branch: c.branch } });
+		}
 		const lib = await ghUpdateManifest(c, (l) => { Object.keys(l).forEach((k) => { l[k] = (l[k] || []).filter((x) => x.id !== item.id); }); });
 		['videos', 'trailer', 'descargas'].forEach((k) => { state.lib[k] = lib[k] || []; });
 	}
@@ -689,7 +741,7 @@
 				try {
 					const item = await ghSaveFile(c, section, chosen, (t) => { msg.textContent = t; });
 					const mine = state.lib[section].find((x) => x.id === item.id);
-					if (mine) { mine.path = mine.url; mine.url = item.preview; mine.local = true; }
+					if (mine && item.preview) { mine.path = mine.url; mine.url = item.preview; mine.local = true; }
 					win.selectId = item.id;
 					renderWin();
 				} catch (e) {
@@ -705,7 +757,7 @@
 					save),
 				pick, msg,
 				el('p', { class: 'gh-small' }, el('a', { href: '#', text: 'Usar almacenamiento en la nube', onclick: (e) => { e.preventDefault(); try { localStorage.removeItem('cf_mode'); } catch { /* nada */ } renderWin(); } }), ` · Repositorio: ${c.repo} · `, el('a', { href: '#', text: 'Cambiar', onclick: (e) => { e.preventDefault(); drawConfig(false); } })),
-				el('p', { class: 'gh-small', text: 'Después de guardar, GitHub Pages tarda 1–2 minutos en mostrarlo a los demás.' }));
+				el('p', { class: 'gh-small', text: 'Archivos hasta 2 GB. Los de más de 70 MB se publican como Release; los demás tardan 1–2 minutos en verse.' }));
 		};
 
 		const drawConfig = (first) => {
