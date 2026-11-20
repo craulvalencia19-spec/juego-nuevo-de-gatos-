@@ -73,18 +73,14 @@
 		} catch {
 			state.online = false;
 			state.admin = false;
-			if (fbOn()) {
-				try { await fbRefresh(); } catch { /* sin Firebase: se queda vacío */ }
-				return;
-			}
 			try {
-				const base = cloudBase();
-				const r = await fetch(base ? `${base}/library.json?v=${Date.now()}` : `media/library.json?v=${Date.now()}`, { cache: 'no-store' });
+				const r = await fetch(`media/library.json?v=${Date.now()}`, { cache: 'no-store' });
 				if (r.ok) {
 					const d = await r.json();
 					['videos', 'trailer', 'descargas'].forEach((k) => { state.lib[k] = Array.isArray(d[k]) ? d[k] : []; });
 				}
 			} catch { /* sin biblioteca publicada */ }
+			await loadLocal();
 		}
 	};
 
@@ -213,21 +209,6 @@
 		btn.disabled = true;
 		gateMsg('');
 		if (!state.online) {
-			if (fbOn()) {
-				gateMsg('Comprobando…', 'warn');
-				try {
-					await fbLogin(pass);
-					state.admin = true;
-					$('#adminPass').value = '';
-					gateMsg('');
-					setRole('admin');
-				} catch (err) {
-					gateMsg(err.message);
-					$('#adminPass').select();
-				}
-				btn.disabled = false;
-				return;
-			}
 			// Sin servidor (Live Preview): se pide la contraseña igual y se entra en modo vista previa
 			if (pass === 'GATO') {
 				state.admin = true;
@@ -256,7 +237,6 @@
 
 	const logout = async () => {
 		try { await api('/api/logout', { method: 'POST' }); } catch { /* da igual */ }
-		if (fbOn() && fb.p) { try { const f = await fb.p; await f.auth.signOut(f.authI); } catch { /* da igual */ } }
 		state.admin = false;
 		goGate();
 	};
@@ -434,6 +414,7 @@
 	const itemsFor = (section) => {
 		const items = (state.lib[section] || []).map((x) => ({ ...x, remote: true }));
 		if (section === 'videos') items.unshift({ ...C.builtinVideo, builtin: true });
+		if (section === 'trailer' && C.builtinTrailer) items.unshift({ ...C.builtinTrailer, builtin: true });
 		items.push(...(state.local[section] || []));
 		return items;
 	};
@@ -506,7 +487,7 @@
 		const prog = el('div', { class: 'prog hidden' }, bar);
 		const msg = el('p', { class: 'msg' });
 		const zone = el('label', { class: 'dz' },
-			el('strong', { text: isFiles ? 'Subir archivo (APK, ZIP…)' : 'Subir video' }),
+			el('strong', { text: isFiles ? 'Subir el APK del juego (o cualquier archivo)' : 'Subir video' }),
 			el('span', { text: `Haz clic o arrastra aquí · máx. ${state.maxMB >= 1024 ? (state.maxMB / 1024).toFixed(0) + ' GB' : state.maxMB + ' MB'}` }),
 			input);
 
@@ -552,7 +533,7 @@
 		if (!window.confirm(`¿Borrar "${item.name}"? Esto lo quita para todos.`)) return;
 		if (!state.online) {
 			try {
-				if (fbOn()) await fbDelete(item); else if (item.key || (useCloud() && cloudBase())) await cloudDelete(item); else await ghDelete(item);
+				await localDelete(item);
 				renderWin();
 			} catch (e) {
 				window.alert(e.message);
@@ -569,451 +550,43 @@
 	};
 
 
-	/* ---- Modo GitHub Pages (sin servidor): "Guardar" sube el archivo al repositorio ---- */
-	const GH_KEY = 'cf_gh';
-	const ghDefaults = () => {
-		const d = { repo: '', token: '', branch: 'main', dir: location.pathname.includes('/public/') ? 'public' : '' };
-		const m = location.hostname.match(/^([^.]+)\.github\.io$/);
-		if (m) d.repo = `${m[1]}/${location.pathname.split('/')[1] || ''}`;
-		return d;
-	};
-	const ghLoad = () => {
-		try { return { ...ghDefaults(), ...JSON.parse(localStorage.getItem(GH_KEY) || '{}') }; } catch { return ghDefaults(); }
-	};
-	const ghSave = (c) => { try { localStorage.setItem(GH_KEY, JSON.stringify(c)); } catch { /* sin almacenamiento */ } };
-	const ghReady = (c) => /^[\w.-]+\/[\w.-]+$/.test(c.repo) && c.token.length > 10;
-
-	const ghCall = async (c, path, opts = {}) => {
-		const url = `https://api.github.com/repos/${c.repo}/contents/${path.split('/').map(encodeURIComponent).join('/')}${opts.method && opts.method !== 'GET' ? '' : `?ref=${encodeURIComponent(c.branch)}`}`;
-		let res;
-		try {
-			res = await fetch(url, {
-				method: opts.method || 'GET',
-				headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${c.token}`, 'Content-Type': 'application/json' },
-				body: opts.body ? JSON.stringify(opts.body) : undefined,
-				cache: 'no-store',
-			});
-		} catch {
-			throw new Error('No se pudo conectar con GitHub. Si tu internet está bien, el archivo puede ser demasiado pesado (máximo ~70 MB) o el token no es válido.');
-		}
-		if (res.status === 404 && (opts.method || 'GET') === 'GET') return null;
-		const data = await res.json().catch(() => ({}));
-		if (!res.ok) {
-			if (res.status === 401) throw new Error('GitHub rechazó el token (401). Revisa que sea correcto y no haya vencido.');
-			if (res.status === 403 || res.status === 404) throw new Error('El token no tiene permiso de escritura en este repositorio (Contents: Read and write) o el nombre del repositorio es incorrecto.');
-			if (res.status === 409 || res.status === 422) throw new Error('conflict');
-			if (res.status === 413) throw new Error('El archivo es demasiado grande para GitHub.');
-			throw new Error(data.message || `Error de GitHub (${res.status})`);
-		}
-		return data;
-	};
-
-	const toBase64 = (file) => new Promise((resolve, reject) => {
-		const r = new FileReader();
-		r.onload = () => resolve(String(r.result).split(',')[1] || '');
-		r.onerror = () => reject(new Error('No se pudo leer el archivo.'));
-		r.readAsDataURL(file);
+	/* ---- Sin servidor: el administrador elige el archivo y pulsa Guardar (se guarda en este navegador) ---- */
+	const idbOpen = () => new Promise((res, rej) => {
+		const r = indexedDB.open('catsfrost', 1);
+		r.onupgradeneeded = () => r.result.createObjectStore('files', { keyPath: 'id' });
+		r.onsuccess = () => res(r.result);
+		r.onerror = () => rej(new Error('Este navegador no permite guardar archivos.'));
 	});
-
-	const ghMediaPath = (c, rel) => (c.dir ? `${c.dir.replace(/^\/+|\/+$/g, '')}/` : '') + rel;
-
-	// Actualiza media/library.json con reintentos (por si cambió mientras tanto)
-	const ghUpdateManifest = async (c, mutate) => {
-		const mp = ghMediaPath(c, 'media/library.json');
-		for (let i = 0; i < 3; i++) {
-			const cur = await ghCall(c, mp);
-			let lib = { videos: [], trailer: [], descargas: [] };
-			if (cur) { try { lib = { ...lib, ...JSON.parse(decodeURIComponent(escape(atob(cur.content.replace(/\n/g, ''))))) }; } catch { /* manifiesto vacío */ } }
-			mutate(lib);
-			const content = btoa(unescape(encodeURIComponent(JSON.stringify(lib, null, 2) + '\n')));
-			try {
-				await ghCall(c, mp, { method: 'PUT', body: { message: 'Actualizar biblioteca', content, branch: c.branch, ...(cur ? { sha: cur.sha } : {}) } });
-				return lib;
-			} catch (e) {
-				if (e.message !== 'conflict' || i === 2) throw e.message === 'conflict' ? new Error('No se pudo actualizar la biblioteca (conflicto). Intenta de nuevo.') : e;
-			}
-		}
-		return null;
-	};
-
-
-	// Archivos pesados (hasta 2 GB): se suben como "Release" del repositorio
-	const ghApi = async (c, url, method = 'GET', body) => {
-		let res;
-		try {
-			res = await fetch(url, { method, headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${c.token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined, cache: 'no-store' });
-		} catch { throw new Error('No se pudo conectar con GitHub. Revisa tu internet.'); }
-		if (res.status === 404 && method === 'GET') return null;
-		const data = res.status === 204 ? {} : await res.json().catch(() => ({}));
-		if (!res.ok) {
-			if (res.status === 401) throw new Error('GitHub rechazó el token (401).');
-			if (res.status === 403 || res.status === 404) throw new Error('El token no tiene permiso para crear Releases. Edita el token y en Contents pon Read and write.');
-			throw new Error(data.message || `Error de GitHub (${res.status})`);
-		}
-		return data;
-	};
-	const ghRelease = async (c) => {
-		const api = `https://api.github.com/repos/${c.repo}/releases`;
-		let rel = await ghApi(c, `${api}/tags/archivos-catsfrost`);
-		if (!rel) rel = await ghApi(c, api, 'POST', { tag_name: 'archivos-catsfrost', target_commitish: c.branch, name: 'Archivos de Cats Frost', body: 'Videos y archivos pesados de la página.', draft: false, prerelease: false });
-		return rel;
-	};
-	const ghSaveBig = async (c, section, file, onStatus) => {
-		if (file.size > 2000 * 1048576) throw new Error('El archivo pesa más de 2 GB, que es el máximo de GitHub.');
-		onStatus('Preparando…');
-		const rel = await ghRelease(c);
-		const safe = `${Date.now().toString(36)}-${file.name.replace(/[^\w.-]+/g, '_').replace(/\.{2,}/g, '.').replace(/^\.+/, '') || 'archivo'}`;
-		const upUrl = `https://uploads.github.com/repos/${c.repo}/releases/${rel.id}/assets?name=${encodeURIComponent(safe)}`;
-		const asset = await new Promise((resolve, reject) => {
-			const xhr = new XMLHttpRequest();
-			xhr.open('POST', upUrl);
-			xhr.setRequestHeader('Authorization', `Bearer ${c.token}`);
-			xhr.setRequestHeader('Accept', 'application/vnd.github+json');
-			xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
-			xhr.upload.onprogress = (e) => { if (e.lengthComputable) onStatus(`Subiendo… ${Math.round((e.loaded / e.total) * 100)}% (no cierres esta ventana)`); };
-			xhr.onload = () => {
-				if (xhr.status >= 200 && xhr.status < 300) { try { resolve(JSON.parse(xhr.responseText)); } catch { reject(new Error('Respuesta inesperada de GitHub.')); } } else reject(new Error(xhr.status === 401 || xhr.status === 403 ? 'El token no tiene permiso para subir archivos grandes (Contents: Read and write).' : `GitHub rechazó el archivo (error ${xhr.status}).`));
-			};
-			xhr.onerror = () => reject(new Error('No se pudo subir el archivo pesado. Revisa tu internet y vuelve a intentar.'));
-			xhr.send(file);
+	const idbRun = async (mode, fn) => {
+		const db = await idbOpen();
+		return new Promise((res, rej) => {
+			const tx = db.transaction('files', mode);
+			const rq = fn(tx.objectStore('files'));
+			tx.oncomplete = () => res(rq && rq.result);
+			tx.onerror = () => rej(new Error('No se pudo guardar el archivo (¿falta espacio en el disco?).'));
+			tx.onabort = tx.onerror;
 		});
-		onStatus('Registrando en la biblioteca…');
-		const item = { id: safe, name: file.name, url: asset.browser_download_url, size: file.size, createdAt: new Date().toISOString(), asset: asset.id };
-		const lib = await ghUpdateManifest(c, (l) => { (l[section] = l[section] || []).push(item); });
-		['videos', 'trailer', 'descargas'].forEach((k) => { state.lib[k] = lib[k] || []; });
-		return item;
 	};
-
-	const ghSaveFile = async (c, section, file, onStatus) => {
-		if (file.size > 70 * 1048576) return ghSaveBig(c, section, file, onStatus);
-		const safe = `${Date.now().toString(36)}-${file.name.replace(/[^\w.-]+/g, '_').replace(/\.{2,}/g, '.').replace(/^\.+/, '') || 'archivo'}`;
-		const rel = `media/${section}/${safe}`;
-		onStatus('Leyendo archivo…');
-		const content = await toBase64(file);
-		onStatus('Subiendo a GitHub… (puede tardar)');
-		await ghCall(c, ghMediaPath(c, rel), { method: 'PUT', body: { message: `Agregar ${file.name}`, content, branch: c.branch } });
-		onStatus('Registrando en la biblioteca…');
-		const item = { id: safe, name: file.name, url: rel, size: file.size, createdAt: new Date().toISOString() };
-		const lib = await ghUpdateManifest(c, (l) => { (l[section] = l[section] || []).push(item); });
-		['videos', 'trailer', 'descargas'].forEach((k) => { state.lib[k] = lib[k] || []; });
-		return { ...item, preview: URL.createObjectURL(file) };
-	};
-
-	async function ghDelete(item) {
-		const c = ghLoad();
-		if (!ghReady(c)) throw new Error('Primero configura GitHub (repositorio y token).');
-		if (item.asset) {
-			await ghApi(c, `https://api.github.com/repos/${c.repo}/releases/assets/${item.asset}`, 'DELETE');
-		} else {
-			const rel = item.path || item.url;
-			const fp = ghMediaPath(c, rel);
-			const cur = await ghCall(c, fp);
-			if (cur) await ghCall(c, fp, { method: 'DELETE', body: { message: `Borrar ${item.name}`, sha: cur.sha, branch: c.branch } });
-		}
-		const lib = await ghUpdateManifest(c, (l) => { Object.keys(l).forEach((k) => { l[k] = (l[k] || []).filter((x) => x.id !== item.id); }); });
-		['videos', 'trailer', 'descargas'].forEach((k) => { state.lib[k] = lib[k] || []; });
-	}
-
-	const ghPanel = (section) => {
-		const isFiles = section === 'descargas';
-		let c = ghLoad();
-		const box = el('div', { class: 'note gh' });
-
-		const draw = () => {
-			box.replaceChildren();
-			if (!ghReady(c)) { drawConfig(true); return; }
-			const input = el('input', { type: 'file', class: 'hidden' });
-			if (!isFiles) input.setAttribute('accept', 'video/*,.mp4,.webm,.mov,.m4v,.ogv');
-			const msg = el('p', { class: 'msg' });
-			let chosen = null;
-			const pick = el('span', { class: 'gh-pick', text: 'Ningún archivo elegido' });
-			const save = el('button', { class: 'btn primary', type: 'button', text: 'Guardar', disabled: true });
-			input.addEventListener('change', () => {
-				chosen = input.files[0] || null;
-				pick.textContent = chosen ? `${chosen.name} · ${fmtSize(chosen.size)}` : 'Ningún archivo elegido';
-				save.disabled = !chosen;
-				msg.className = 'msg'; msg.textContent = '';
-			});
-			save.addEventListener('click', async () => {
-				if (!chosen) return;
-				save.disabled = true;
-				msg.className = 'msg';
-				try {
-					const item = await ghSaveFile(c, section, chosen, (t) => { msg.textContent = t; });
-					const mine = state.lib[section].find((x) => x.id === item.id);
-					if (mine && item.preview) { mine.path = mine.url; mine.url = item.preview; mine.local = true; }
-					win.selectId = item.id;
-					renderWin();
-				} catch (e) {
-					msg.className = 'msg err';
-					msg.textContent = e.message === 'conflict' ? 'No se pudo guardar (conflicto). Intenta de nuevo.' : e.message;
-					save.disabled = false;
-				}
-			});
-			box.append(
-				el('p', { text: isFiles ? 'Elige el APK o archivo y pulsa Guardar para publicarlo en tu GitHub.' : 'Elige el video y pulsa Guardar para publicarlo en tu GitHub.' }),
-				el('div', { class: 'gh-row' },
-					el('label', { class: 'btn' }, isFiles ? 'Elegir archivo' : 'Elegir video', input),
-					save),
-				pick, msg,
-				el('p', { class: 'gh-small' }, el('a', { href: '#', text: 'Usar almacenamiento en la nube', onclick: (e) => { e.preventDefault(); try { localStorage.removeItem('cf_mode'); } catch { /* nada */ } renderWin(); } }), ` · Repositorio: ${c.repo} · `, el('a', { href: '#', text: 'Cambiar', onclick: (e) => { e.preventDefault(); drawConfig(false); } })),
-				el('p', { class: 'gh-small', text: 'Archivos hasta 2 GB. Los de más de 70 MB se publican como Release; los demás tardan 1–2 minutos en verse.' }));
-		};
-
-		const drawConfig = (first) => {
-			box.replaceChildren();
-			const f = (label, key, type = 'text', ph = '') => {
-				const i = el('input', { type, class: 'gh-in', value: c[key] || '', placeholder: ph, autocomplete: 'off', spellcheck: 'false' });
-				i.addEventListener('input', () => { c[key] = i.value.trim(); });
-				return el('label', { class: 'gh-f' }, el('span', { text: label }), i);
-			};
-			const msg = el('p', { class: 'msg' });
-			box.append(
-				el('p', { text: first ? 'Para guardar en GitHub necesito conectar tu repositorio (se hace una sola vez en este navegador):' : 'Conexión con GitHub:' }),
-				f('Repositorio (usuario/nombre)', 'repo', 'text', 'tuusuario/cats-frost'),
-				f('Token de GitHub', 'token', 'password', 'github_pat_…'),
-				f('Rama', 'branch', 'text', 'main'),
-				f('Carpeta donde está index.html (vacío si está en la raíz)', 'dir', 'text', 'public'),
-				el('p', { class: 'gh-small', text: 'Crea el token en GitHub → Settings → Developer settings → Fine-grained tokens, solo para este repositorio, con permiso Contents: Read and write. Se guarda solo en este navegador; no lo compartas.' }),
-				msg,
-				el('button', { class: 'btn primary', type: 'button', text: 'Conectar', onclick: () => {
-					c.dir = (c.dir || '').replace(/^\/+|\/+$/g, '');
-					if (!ghReady(c)) { msg.className = 'msg err'; msg.textContent = 'Revisa el repositorio (usuario/nombre) y pega el token.'; return; }
-					ghSave(c); draw();
-				} }));
-		};
-
-		draw();
-		return box;
-	};
-
-
-	/* ---- Almacenamiento en la nube (Cloudflare R2 / S3): subida directa de archivos pesados ---- */
-	const CLOUD_KEY = 'cf_cloud';
-	const cloudLoad = () => {
-		let c = {};
-		try { c = JSON.parse(localStorage.getItem(CLOUD_KEY) || '{}'); } catch { /* vacío */ }
-		return { endpoint: '', bucket: '', ak: '', sk: '', publicUrl: (C.cloud && C.cloud.publicUrl) || '', ...c };
-	};
-	const cloudBase = () => {
-		const u = (C.cloud && C.cloud.publicUrl) || cloudLoad().publicUrl || '';
-		return u.replace(/\/+$/, '');
-	};
-	const cloudReady = (c) => /^https:\/\/.+/.test(c.endpoint) && c.bucket && c.ak && c.sk && /^https:\/\/.+/.test(c.publicUrl);
-	const useCloud = () => { try { return localStorage.getItem('cf_mode') !== 'github'; } catch { return true; } };
-
-	const cloudFetchJSON = async (c, key) => {
-		const url = await window.S3Presign(c, 'GET', key);
-		let res;
-		try { res = await fetch(url, { cache: 'no-store' }); } catch { throw new Error('No se pudo contactar con el almacenamiento. Revisa la configuración CORS del bucket.'); }
-		if (res.status === 404) return null;
-		if (!res.ok) throw new Error(res.status === 403 ? 'Claves rechazadas (403). Revisa Access Key, Secret y permisos del token.' : `Error del almacenamiento (${res.status})`);
-		return res.json();
-	};
-	const cloudPutJSON = async (c, key, obj) => {
-		const url = await window.S3Presign(c, 'PUT', key);
-		let res;
+	const loadLocal = async () => {
 		try {
-			res = await fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }, body: JSON.stringify(obj) });
-		} catch { throw new Error('No se pudo guardar la biblioteca. Revisa la configuración CORS del bucket.'); }
-		if (!res.ok) throw new Error(`No se pudo guardar la biblioteca (${res.status})`);
+			const all = (await idbRun('readonly', (s) => s.getAll())) || [];
+			['videos', 'trailer', 'descargas'].forEach((k) => { state.local[k] = []; });
+			all.sort((a, b) => a.createdAt - b.createdAt).forEach((r) => {
+				if (state.local[r.section]) state.local[r.section].push({ id: r.id, name: r.name, size: r.size, createdAt: r.createdAt, url: URL.createObjectURL(r.blob), local: true, idb: true });
+			});
+		} catch { /* sin archivos guardados */ }
+		updateFolderCounts();
 	};
-	const cloudUpdateManifest = async (c, mutate) => {
-		const lib = { videos: [], trailer: [], descargas: [], ...((await cloudFetchJSON(c, 'library.json')) || {}) };
-		mutate(lib);
-		await cloudPutJSON(c, 'library.json', lib);
-		['videos', 'trailer', 'descargas'].forEach((k) => { state.lib[k] = lib[k] || []; });
-	};
-	const cloudUpload = (c, key, file, disposition, onProgress) => new Promise((resolve, reject) => {
-		window.S3Presign(c, 'PUT', key, 6 * 3600).then((url) => {
-			const xhr = new XMLHttpRequest();
-			xhr.open('PUT', url);
-			xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
-			if (disposition) xhr.setRequestHeader('Content-Disposition', disposition);
-			xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
-			xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(xhr.status === 403 ? 'Claves rechazadas (403). Revisa Access Key, Secret y permisos.' : `No se pudo subir (error ${xhr.status}).`)));
-			xhr.onerror = () => reject(new Error('No se pudo subir: revisa tu conexión y la configuración CORS del bucket.'));
-			xhr.send(file);
-		}).catch(reject);
-	});
-	const cloudSaveFile = async (c, section, file, onProgress, onStatus) => {
-		const safe = `${Date.now().toString(36)}-${file.name.replace(/[^\w.-]+/g, '_').replace(/\.{2,}/g, '.').replace(/^\.+/, '') || 'archivo'}`;
-		const key = `${section}/${safe}`;
-		const disp = section === 'descargas' ? `attachment; filename="${file.name.replace(/[^\w. -]+/g, '_')}"` : '';
-		await cloudUpload(c, key, file, disp, onProgress);
-		onStatus('Registrando en la biblioteca…');
-		const item = { id: safe, key, name: file.name, url: `${c.publicUrl.replace(/\/+$/, '')}/${key}`, size: file.size, createdAt: new Date().toISOString() };
-		await cloudUpdateManifest(c, (l) => { (l[section] = l[section] || []).push(item); });
-		return item;
-	};
-	async function cloudDelete(item) {
-		const c = cloudLoad();
-		if (!cloudReady(c)) throw new Error('Primero conecta el almacenamiento.');
-		if (item.key) {
-			const url = await window.S3Presign(c, 'DELETE', item.key);
-			const res = await fetch(url, { method: 'DELETE' }).catch(() => null);
-			if (!res || (!res.ok && res.status !== 404)) throw new Error('No se pudo borrar el archivo del almacenamiento.');
-		}
-		await cloudUpdateManifest(c, (l) => { Object.keys(l).forEach((k) => { l[k] = (l[k] || []).filter((x) => x.id !== item.id); }); });
+	async function localDelete(item) {
+		await idbRun('readwrite', (s) => s.delete(item.id));
+		await loadLocal();
 	}
 
-	const cloudPanel = (section) => {
-		const isFiles = section === 'descargas';
-		let c = cloudLoad();
-		const box = el('div', { class: 'note gh' });
-
-		const toGithub = el('a', { href: '#', text: 'Usar GitHub en su lugar', onclick: (e) => { e.preventDefault(); try { localStorage.setItem('cf_mode', 'github'); } catch { /* nada */ } renderWin(); } });
-
-		const draw = () => {
-			box.replaceChildren();
-			if (!cloudReady(c)) { drawConfig(true); return; }
-			const input = el('input', { type: 'file', class: 'hidden' });
-			if (!isFiles) input.setAttribute('accept', 'video/*,.mp4,.webm,.mov,.m4v,.ogv');
-			const bar = el('i');
-			const prog = el('div', { class: 'prog hidden' }, bar);
-			const msg = el('p', { class: 'msg' });
-			let chosen = null;
-			const pick = el('span', { class: 'gh-pick', text: 'Ningún archivo elegido' });
-			const save = el('button', { class: 'btn primary', type: 'button', text: 'Guardar', disabled: true });
-			input.addEventListener('change', () => {
-				chosen = input.files[0] || null;
-				pick.textContent = chosen ? `${chosen.name} · ${fmtSize(chosen.size)}` : 'Ningún archivo elegido';
-				save.disabled = !chosen;
-				msg.className = 'msg'; msg.textContent = '';
-			});
-			save.addEventListener('click', async () => {
-				if (!chosen) return;
-				save.disabled = true;
-				prog.classList.remove('hidden');
-				bar.style.width = '0%';
-				msg.className = 'msg';
-				msg.textContent = 'Subiendo… no cierres esta ventana.';
-				try {
-					const item = await cloudSaveFile(c, section, chosen, (p) => { bar.style.width = `${Math.round(p * 100)}%`; }, (t) => { msg.textContent = t; });
-					win.selectId = item.id;
-					renderWin();
-				} catch (e) {
-					msg.className = 'msg err';
-					msg.textContent = e.message;
-					prog.classList.add('hidden');
-					save.disabled = false;
-				}
-			});
-			const needLine = !(C.cloud && C.cloud.publicUrl);
-			box.append(
-				el('p', { text: isFiles ? 'Elige el APK o archivo y pulsa Guardar.' : 'Elige el video (puede ser pesado) y pulsa Guardar.' }),
-				el('div', { class: 'gh-row' }, el('label', { class: 'btn' }, isFiles ? 'Elegir archivo' : 'Elegir video', input), save),
-				pick, prog, msg,
-				needLine ? el('p', { class: 'gh-small' }, 'Para que los usuarios lo vean, en content.js pon: ', el('code', { text: `cloud: { publicUrl: '${c.publicUrl}' },` }), ' y vuelve a publicar la página.') : null,
-				el('p', { class: 'gh-small' }, `Bucket: ${c.bucket} · `, el('a', { href: '#', text: 'Cambiar', onclick: (e) => { e.preventDefault(); drawConfig(false); } }), ' · ', toGithub));
-		};
-
-		const drawConfig = (first) => {
-			box.replaceChildren();
-			const f = (label, key, type = 'text', ph = '') => {
-				const i = el('input', { type, class: 'gh-in', value: c[key] || '', placeholder: ph, autocomplete: 'off', spellcheck: 'false' });
-				i.addEventListener('input', () => { c[key] = i.value.trim(); });
-				return el('label', { class: 'gh-f' }, el('span', { text: label }), i);
-			};
-			const msg = el('p', { class: 'msg' });
-			box.append(
-				el('p', { text: first ? 'Conecta tu almacenamiento (Cloudflare R2) una sola vez. Los datos quedan solo en este navegador:' : 'Conexión con el almacenamiento:' }),
-				f('Endpoint S3', 'endpoint', 'text', 'https://xxxx.r2.cloudflarestorage.com'),
-				f('Nombre del bucket', 'bucket', 'text', 'cats-frost'),
-				f('Access Key ID', 'ak', 'text', ''),
-				f('Secret Access Key', 'sk', 'password', ''),
-				f('URL pública del bucket', 'publicUrl', 'text', 'https://pub-xxxx.r2.dev'),
-				msg,
-				el('div', { class: 'gh-row' },
-					el('button', { class: 'btn primary', type: 'button', text: 'Conectar', onclick: () => {
-						c.endpoint = c.endpoint.replace(/\/+$/, '');
-						c.publicUrl = c.publicUrl.replace(/\/+$/, '');
-						if (!cloudReady(c)) { msg.className = 'msg err'; msg.textContent = 'Completa todos los campos (los enlaces empiezan con https://).'; return; }
-						try { localStorage.setItem(CLOUD_KEY, JSON.stringify(c)); } catch { /* nada */ }
-						draw();
-					} }),
-					toGithub));
-		};
-
-		draw();
-		return box;
-	};
-
-
-	/* ---- Firebase (Storage + Auth): subida directa de archivos pesados ---- */
-	const FB_VER = '10.12.2';
-	const FB_ADMIN_EMAIL = 'admin@catsfrost.app';
-	const fbOn = () => !!(C.firebase && C.firebase.apiKey && C.firebase.storageBucket);
-	const fb = { p: null };
-	const fbInit = () => {
-		if (!fb.p) {
-			fb.p = (async () => {
-				const base = `https://www.gstatic.com/firebasejs/${FB_VER}`;
-				const [app, auth, st] = await Promise.all([import(`${base}/firebase-app.js`), import(`${base}/firebase-auth.js`), import(`${base}/firebase-storage.js`)]);
-				const a = app.initializeApp(C.firebase);
-				return { app, auth, st, authI: auth.getAuth(a), storage: st.getStorage(a) };
-			})();
-			fb.p.catch(() => { fb.p = null; });
-		}
-		return fb.p;
-	};
-	const fbPass = (typed) => (typed.length >= 6 ? typed : `${typed}#cf2`); // Firebase exige 6+ caracteres
-	const fbLogin = async (typed) => {
-		const f = await fbInit();
-		try {
-			await f.auth.signInWithEmailAndPassword(f.authI, FB_ADMIN_EMAIL, fbPass(typed));
-		} catch (e) {
-			const code = String(e.code || '');
-			if (code.includes('network')) throw new Error('Sin conexión con Firebase.');
-			throw new Error('Contraseña incorrecta.');
-		}
-	};
-	const fbList = async () => {
-		const f = await fbInit();
-		const out = { videos: [], trailer: [], descargas: [] };
-		await Promise.all(Object.keys(out).map(async (sec) => {
-			let res;
-			try { res = await f.st.listAll(f.st.ref(f.storage, sec)); } catch { return; }
-			const items = await Promise.all(res.items.map(async (r) => {
-				try {
-					const [meta, url] = await Promise.all([f.st.getMetadata(r), f.st.getDownloadURL(r)]);
-					return { id: r.fullPath, key: r.fullPath, name: (meta.customMetadata && meta.customMetadata.name) || r.name, url, size: meta.size, createdAt: meta.timeCreated };
-				} catch { return null; }
-			}));
-			out[sec] = items.filter(Boolean).sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
-		}));
-		return out;
-	};
-	const fbRefresh = async () => {
-		const lib = await fbList();
-		['videos', 'trailer', 'descargas'].forEach((k) => { state.lib[k] = lib[k]; });
-	};
-	const fbUpload = (section, file, onProgress) => new Promise((resolve, reject) => {
-		fbInit().then((f) => {
-			if (!f.authI.currentUser) { reject(new Error('Tu sesión de administrador venció. Sal y vuelve a entrar.')); return; }
-			const safe = `${Date.now().toString(36)}-${file.name.replace(/[^\w.-]+/g, '_').replace(/\.{2,}/g, '.').replace(/^\.+/, '') || 'archivo'}`;
-			const r = f.st.ref(f.storage, `${section}/${safe}`);
-			const meta = { contentType: file.type || 'application/octet-stream', customMetadata: { name: file.name } };
-			if (section === 'descargas') meta.contentDisposition = `attachment; filename="${file.name.replace(/[^\w. -]+/g, '_')}"`;
-			const task = f.st.uploadBytesResumable(r, file, meta);
-			task.on('state_changed', (sn) => onProgress(sn.bytesTransferred / sn.totalBytes), (e) => {
-				const code = String(e.code || '');
-				reject(new Error(code.includes('unauthorized') ? 'Sin permiso para subir: revisa las reglas de Storage y que hayas entrado como administrador.' : code.includes('quota') ? 'Se agotó la cuota de almacenamiento.' : `No se pudo subir (${code || 'error'}).`));
-			}, () => resolve(`${section}/${safe}`));
-		}).catch(() => reject(new Error('No se pudo cargar Firebase. Revisa tu conexión.')));
-	});
-	async function fbDelete(item) {
-		const f = await fbInit();
-		await f.st.deleteObject(f.st.ref(f.storage, item.key));
-		await fbRefresh();
-	}
-
-	const fbPanel = (section) => {
+	const adminOfflinePanel = (section) => {
+		if (!(state.role === 'admin' && state.admin)) return null;
 		const isFiles = section === 'descargas';
 		const input = el('input', { type: 'file', class: 'hidden' });
 		if (!isFiles) input.setAttribute('accept', 'video/*,.mp4,.webm,.mov,.m4v,.ogv');
-		const bar = el('i');
-		const prog = el('div', { class: 'prog hidden' }, bar);
 		const msg = el('p', { class: 'msg' });
 		let chosen = null;
 		const pick = el('span', { class: 'gh-pick', text: 'Ningún archivo elegido' });
@@ -1027,30 +600,26 @@
 		save.addEventListener('click', async () => {
 			if (!chosen) return;
 			save.disabled = true;
-			prog.classList.remove('hidden');
-			bar.style.width = '0%';
 			msg.className = 'msg';
-			msg.textContent = 'Subiendo… no cierres esta ventana.';
+			msg.textContent = 'Guardando… no cierres esta ventana.';
+			const id = `local-${Date.now().toString(36)}`;
 			try {
-				const key = await fbUpload(section, chosen, (p) => { bar.style.width = `${Math.round(p * 100)}%`; });
-				msg.textContent = 'Guardado. Actualizando…';
-				await fbRefresh();
-				win.selectId = key;
+				await idbRun('readwrite', (s) => s.put({ id, section, name: chosen.name, size: chosen.size, createdAt: Date.now(), blob: chosen }));
+				await loadLocal();
+				win.selectId = id;
 				renderWin();
 			} catch (e) {
 				msg.className = 'msg err';
 				msg.textContent = e.message;
-				prog.classList.add('hidden');
 				save.disabled = false;
 			}
 		});
 		return el('div', { class: 'note gh' },
-			el('p', { text: isFiles ? 'Elige el APK o archivo y pulsa Guardar.' : 'Elige el video (puede ser pesado) y pulsa Guardar.' }),
-			el('div', { class: 'gh-row' }, el('label', { class: 'btn' }, isFiles ? 'Elegir archivo' : 'Elegir video', input), save),
-			pick, prog, msg);
+			el('strong', { text: isFiles ? 'Subir APK del juego' : 'Subir video' }),
+			el('div', { class: 'gh-row' }, el('label', { class: 'btn' }, isFiles ? 'Elegir APK' : 'Elegir video', input), save),
+			pick, msg);
 	};
 
-	const adminOfflinePanel = (section) => (state.role === 'admin' && state.admin ? (fbOn() ? fbPanel(section) : useCloud() ? cloudPanel(section) : ghPanel(section)) : null);
 
 	const offlineNote = (section) => {
 		const note = el('div', { class: 'note' },
@@ -1137,7 +706,7 @@
 					el('span', { class: 'vtext' },
 						el('strong', { text: it.name }),
 						el('small', { text: it.builtin ? 'Incluido' : it.local ? 'Vista previa local' : `${fmtSize(it.size)} · ${fmtDate(it.createdAt)}` }))),
-				admin && it.remote ? el('button', { class: 'btn danger mini', type: 'button', text: 'Borrar', onclick: () => deleteItem(it) }) : null));
+				admin && (it.remote || it.idb) ? el('button', { class: 'btn danger mini', type: 'button', text: 'Borrar', onclick: () => deleteItem(it) }) : null));
 		});
 		empty.classList.toggle('hidden', items.length > 0);
 		video.classList.toggle('hidden', items.length === 0);

@@ -18,7 +18,16 @@ Node.js 18 o superior (https://nodejs.org). No hay que instalar nada más.
 Sin servidor (Live Preview): el botón Administrador también pide la contraseña (GATO) y entra en modo vista previa;
 solo sirve para ver el diseño: lo que pruebes ahí no se publica.
 
-## Publicar (admin)
+## Tráiler incluido
+El tráiler (`public/assets/trailer.mp4`, 1280×720) ya viene dentro del proyecto y aparece solo en la carpeta Tráiler,
+sin GitHub ni subidas. Para cambiarlo, reemplaza ese archivo (mismo nombre) o edita `builtinTrailer` en `public/content.js`.
+
+## Publicar (admin) – subir el APK
+1. Doble clic en INICIAR.bat y abre http://localhost:8080
+2. Administrador → clave GATO → Ir a descargar el juego → carpeta **Descargas**.
+3. Arrastra el APK al recuadro "Subir el APK del juego" (o haz clic para elegirlo). Listo: los usuarios ven el botón Descargar.
+
+## Publicar (admin) – detalles
 Entra como Administrador → Ir a descargar el juego → abre la carpeta → sube el video del tráiler
 (.mp4/.webm), videos, o el APK (cualquier archivo) en Descargas. Los usuarios solo ven y descargan.
 Los archivos quedan en `data/` (haz copia de esa carpeta).
@@ -34,32 +43,6 @@ La subida necesita este servidor Node en marcha; Live Server / Live Preview solo
 ## Editar textos
 `public/content.js`: nombre, conceptos del juego, palabras de la intro y carpetas.
 
-## Subir a GitHub Pages (botón "Guardar")
-GitHub Pages no tiene servidor, así que el botón **Guardar** (modo Administrador) sube el archivo a TU repositorio con la API de GitHub:
-1. Sube todo el proyecto a un repositorio y activa Pages.
-2. Crea un token en GitHub → Settings → Developer settings → Fine-grained tokens: solo ese repositorio, permiso **Contents: Read and write**.
-3. Abre tu página → Administrador (GATO) → una carpeta → escribe repositorio (usuario/nombre), token y la carpeta donde está index.html (ej. `public`) → Conectar.
-4. Elige el video/APK → **Guardar**. En 1–2 minutos todos lo ven. Límite de GitHub: ~100 MB por archivo (comprime el video si pesa más).
-El token queda solo en tu navegador. Los usuarios solo ven y descargan lo guardado en `media/`.
-
-## Archivos pesados SIN servidor (Cloudflare R2) – botón "Guardar" sube directo a la nube
-Una sola vez:
-1. Cuenta en https://dash.cloudflare.com → **R2 Object Storage** (plan gratis ~10 GB; suele pedir tarjeta).
-2. Crea un bucket (ej. `cats-frost`).
-3. Bucket → Settings → **Public access** → R2.dev subdomain → Allow. Copia la URL pública (`https://pub-xxxx.r2.dev`).
-4. Bucket → Settings → **CORS Policy** → pega:
-   `[{"AllowedOrigins":["*"],"AllowedMethods":["GET","PUT","DELETE","HEAD"],"AllowedHeaders":["*"],"MaxAgeSeconds":3600}]`
-5. R2 → **Manage API tokens** → Create token → permiso *Object Read & Write* para ese bucket. Copia Access Key ID, Secret Access Key y el endpoint S3 (`https://xxxx.r2.cloudflarestorage.com`).
-6. En la página: Administrador (GATO) → una carpeta → pega los datos → Conectar → elige el video → **Guardar**.
-7. En `public/content.js` pon `cloud: { publicUrl: 'https://pub-xxxx.r2.dev' }` y publica la página (así los usuarios lo ven).
-Las claves quedan solo en tu navegador (no van en el código).
-
-## Firebase (Storage + Auth) para archivos pesados con GitHub Pages
-La página usa Firebase si pegas tu `firebaseConfig` en `public/content.js` (objeto `firebase`). Admin = correo `admin@catsfrost.app` con contraseña GATO
-(Firebase pide 6+ caracteres: la página agrega `#cf2` por dentro, tú sigues escribiendo GATO).
-Reglas de Storage:
-    rules_version = '2';
-    service firebase.storage { match /b/{b}/o { match /{all=**} {
-      allow read: if true;
-      allow write: if request.auth != null && request.auth.token.email == 'admin@catsfrost.app' && (request.method == 'delete' || request.resource.size < 2 * 1024 * 1024 * 1024);
-    } } }
+## Sin servidor (Live Server, puerto 3000, etc.)
+El administrador elige el video o el APK y pulsa **Guardar**. Se guarda en ese navegador de ese computador (sin límite práctico de tamaño).
+Para que lo vean todos los usuarios, usa INICIAR.bat (servidor): ahí lo que subas queda publicado para todos.

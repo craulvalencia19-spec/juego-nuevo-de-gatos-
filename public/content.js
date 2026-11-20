@@ -43,6 +43,9 @@ window.CONTENT = {
 	// Video que viene incluido (carpeta "Video")
 	builtinVideo: { id: 'builtin-gato', name: 'Gato en la masa (TikTok)', url: 'assets/fondo.mp4' },
 
+	// Tráiler que viene incluido en el proyecto (carpeta "Tráiler"): no depende de GitHub ni de la nube
+	builtinTrailer: { id: 'builtin-trailer', name: 'Tráiler oficial – Cats Frost', url: 'assets/trailer.mp4' },
+
 	// Imágenes de la galería (pantalla de inicio)
 	gallery: [
 		{ thumb: 'assets/gato-lentes-thumb.jpg', full: 'assets/gato-lentes.jpg', caption: 'Gato con lentes' },
