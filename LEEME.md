@@ -43,6 +43,12 @@ La subida necesita este servidor Node en marcha; Live Server / Live Preview solo
 ## Editar textos
 `public/content.js`: nombre, conceptos del juego, palabras de la intro y carpetas.
 
+## Que todos vean lo que subes (link público)
+1. Doble clic en **INICIAR-PUBLICO.bat** (necesita Node.js). Aparece un enlace `https://….trycloudflare.com` (también queda en ENLACE.txt y copiado al portapapeles): ese es el que compartes.
+2. Tú, como administrador, entra por **http://localhost:8080** (clave GATO) y sube el video / APK. Lo ven todos los que entren por el enlace.
+3. La PC debe seguir encendida con la ventana abierta; el enlace cambia cada vez que lo inicias.
+La página de GitHub Pages NO recibe archivos: usa siempre este modo.
+
 ## Sin servidor (Live Server, puerto 3000, etc.)
 El administrador elige el video o el APK y pulsa **Guardar**. Se guarda en ese navegador de ese computador (sin límite práctico de tamaño).
 Para que lo vean todos los usuarios, usa INICIAR.bat (servidor): ahí lo que subas queda publicado para todos.
