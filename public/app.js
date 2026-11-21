@@ -479,55 +479,67 @@
 		xhr.send(file);
 	});
 
-	const uploadPanel = (section) => {
+	/* Panel único del administrador: Elegir archivo -> Guardar -> barra de progreso */
+	const savePanel = (section, maxMB, saver) => {
 		const isFiles = section === 'descargas';
-		const input = el('input', { type: 'file', class: 'hidden', multiple: true });
+		const input = el('input', { type: 'file', class: 'hidden' });
 		if (!isFiles) input.setAttribute('accept', 'video/*,.mp4,.webm,.mov,.m4v,.ogv');
 		const bar = el('i');
+		const pct = el('span', { class: 'gh-pick', text: '' });
 		const prog = el('div', { class: 'prog hidden' }, bar);
 		const msg = el('p', { class: 'msg' });
-		const zone = el('label', { class: 'dz' },
-			el('strong', { text: isFiles ? 'Subir el APK del juego (o cualquier archivo)' : 'Subir video' }),
-			el('span', { text: `Haz clic o arrastra aquí · máx. ${state.maxMB >= 1024 ? (state.maxMB / 1024).toFixed(0) + ' GB' : state.maxMB + ' MB'}` }),
-			input);
-
-		const handle = async (files) => {
+		const pick = el('span', { class: 'gh-pick', text: 'Ningún archivo elegido' });
+		const save = el('button', { class: 'btn primary', type: 'button', text: 'Guardar', disabled: true });
+		const choose = el('label', { class: 'btn' }, isFiles ? 'Elegir APK' : 'Elegir video', input);
+		let chosen = null;
+		input.addEventListener('change', () => {
+			chosen = input.files[0] || null;
+			msg.className = 'msg'; msg.textContent = '';
+			if (chosen && chosen.size > maxMB * 1048576) {
+				msg.className = 'msg err';
+				msg.textContent = `"${chosen.name}" supera el máximo de ${maxMB} MB.`;
+				chosen = null;
+			}
+			pick.textContent = chosen ? `${chosen.name} · ${fmtSize(chosen.size)}` : 'Ningún archivo elegido';
+			save.disabled = !chosen;
+		});
+		save.addEventListener('click', async () => {
+			if (!chosen) return;
+			const file = chosen;
+			save.disabled = true; input.disabled = true;
+			prog.classList.remove('hidden');
+			bar.style.width = '0%';
 			msg.className = 'msg';
-			msg.textContent = '';
-			let lastId = null;
-			for (const f of files) {
-				if (f.size > state.maxMB * 1048576) {
-					msg.className = 'msg err';
-					msg.textContent = `"${f.name}" supera el máximo de ${state.maxMB} MB.`;
-					continue;
-				}
-				prog.classList.remove('hidden');
-				bar.style.width = '0%';
-				msg.className = 'msg';
-				msg.textContent = `Subiendo ${f.name}…`;
-				try {
-					const item = await uploadFile(f, section, (p) => { bar.style.width = `${Math.round(p * 100)}%`; });
-					lastId = item.id;
-				} catch (e) {
-					msg.className = 'msg err';
-					msg.textContent = e.message;
-					prog.classList.add('hidden');
-					return;
-				}
-			}
-			prog.classList.add('hidden');
-			if (lastId) {
-				win.selectId = lastId;
-				await refreshLib();
+			const t0 = Date.now();
+			const onP = (p) => {
+				const v = Math.max(0, Math.min(1, p));
+				bar.style.width = `${(v * 100).toFixed(1)}%`;
+				const secs = (Date.now() - t0) / 1000;
+				const eta = v > 0.02 ? Math.max(0, Math.round(secs / v - secs)) : null;
+				msg.textContent = `Guardando ${Math.round(v * 100)}%` + (eta !== null ? ` · faltan ~${eta >= 60 ? Math.ceil(eta / 60) + ' min' : eta + ' s'}` : '') + ' — no cierres esta ventana.';
+			};
+			onP(0);
+			try {
+				const id = await saver(file, onP);
+				bar.style.width = '100%';
+				msg.textContent = '¡Listo, guardado!';
+				win.selectId = id;
+				await new Promise((r) => setTimeout(r, 500));
+				if (state.online) await refreshLib(); else await loadLocal();
 				renderWin();
+			} catch (e) {
+				msg.className = 'msg err';
+				msg.textContent = e.message || 'No se pudo guardar.';
+				prog.classList.add('hidden');
+				save.disabled = false; input.disabled = false;
 			}
-		};
-		input.addEventListener('change', () => { const files = [...input.files]; input.value = ''; handle(files); });
-		['dragenter', 'dragover'].forEach((t) => zone.addEventListener(t, (e) => { e.preventDefault(); zone.classList.add('over'); }));
-		['dragleave', 'drop'].forEach((t) => zone.addEventListener(t, (e) => { e.preventDefault(); zone.classList.remove('over'); }));
-		zone.addEventListener('drop', (e) => handle([...e.dataTransfer.files]));
-		return el('div', { class: 'upload' }, zone, prog, msg);
+		});
+		return el('div', { class: 'note gh' },
+			el('strong', { text: isFiles ? 'Subir APK del juego' : 'Subir video' }),
+			el('div', { class: 'gh-row' }, choose, save), pick, prog, msg);
 	};
+
+	const uploadPanel = (section) => savePanel(section, state.maxMB, async (file, onP) => (await uploadFile(file, section, onP)).id);
 
 	const deleteItem = async (item) => {
 		if (!window.confirm(`¿Borrar "${item.name}"? Esto lo quita para todos.`)) return;
@@ -556,6 +568,7 @@
 		r.onupgradeneeded = () => r.result.createObjectStore('files', { keyPath: 'id' });
 		r.onsuccess = () => res(r.result);
 		r.onerror = () => rej(new Error('Este navegador no permite guardar archivos.'));
+		r.onblocked = () => rej(new Error('Cierra otras pestañas de esta página y vuelve a intentar.'));
 	});
 	const idbRun = async (mode, fn) => {
 		const db = await idbOpen();
@@ -584,42 +597,23 @@
 
 	const adminOfflinePanel = (section) => {
 		if (!(state.role === 'admin' && state.admin)) return null;
-		const isFiles = section === 'descargas';
-		const input = el('input', { type: 'file', class: 'hidden' });
-		if (!isFiles) input.setAttribute('accept', 'video/*,.mp4,.webm,.mov,.m4v,.ogv');
-		const msg = el('p', { class: 'msg' });
-		let chosen = null;
-		const pick = el('span', { class: 'gh-pick', text: 'Ningún archivo elegido' });
-		const save = el('button', { class: 'btn primary', type: 'button', text: 'Guardar', disabled: true });
-		input.addEventListener('change', () => {
-			chosen = input.files[0] || null;
-			pick.textContent = chosen ? `${chosen.name} · ${fmtSize(chosen.size)}` : 'Ningún archivo elegido';
-			save.disabled = !chosen;
-			msg.className = 'msg'; msg.textContent = '';
-		});
-		save.addEventListener('click', async () => {
-			if (!chosen) return;
-			save.disabled = true;
-			msg.className = 'msg';
-			msg.textContent = 'Guardando… no cierres esta ventana.';
-			const id = `local-${Date.now().toString(36)}`;
-			try {
-				await idbRun('readwrite', (s) => s.put({ id, section, name: chosen.name, size: chosen.size, createdAt: Date.now(), blob: chosen }));
-				await loadLocal();
-				win.selectId = id;
-				renderWin();
-			} catch (e) {
-				msg.className = 'msg err';
-				msg.textContent = e.message;
-				save.disabled = false;
+		return savePanel(section, 4096, async (file, onP) => {
+			const chunks = [];
+			const step = 4 * 1048576;
+			for (let o = 0; o < file.size; o += step) {
+				chunks.push(await file.slice(o, o + step).arrayBuffer());
+				onP(Math.min(0.9, (o + step) / file.size * 0.9));
 			}
+			const id = `local-${Date.now().toString(36)}`;
+			const blob = new Blob(chunks, { type: file.type || 'application/octet-stream' });
+			await Promise.race([
+				idbRun('readwrite', (s) => s.put({ id, section, name: file.name, size: file.size, createdAt: Date.now(), blob })),
+				new Promise((_, rej) => setTimeout(() => rej(new Error('El navegador no logró guardar el archivo. Prueba sin modo privado o usa INICIAR-PUBLICO.bat.')), 60000)),
+			]);
+			onP(1);
+			return id;
 		});
-		return el('div', { class: 'note gh' },
-			el('strong', { text: isFiles ? 'Subir APK del juego' : 'Subir video' }),
-			el('div', { class: 'gh-row' }, el('label', { class: 'btn' }, isFiles ? 'Elegir APK' : 'Elegir video', input), save),
-			pick, msg);
 	};
-
 
 	const offlineNote = (section) => {
 		const note = el('div', { class: 'note' },
@@ -662,7 +656,7 @@
 		if (section === 'descargas') {
 			const wrap = el('div', { class: 'dwin' });
 			if (admin && state.online) wrap.append(uploadPanel(section));
-			if (!state.online) wrap.append(adminOfflinePanel(section));
+			if (!state.online && admin) wrap.append(adminOfflinePanel(section));
 			const grid = el('div', { class: 'dgrid' });
 			if (!items.length) grid.append(el('p', { class: 'empty', text: emptyText }));
 			items.forEach((it) => {
@@ -688,7 +682,7 @@
 		const list = el('div', { class: 'vlist' });
 		const side = el('aside', { class: 'vside' });
 		if (admin && state.online) side.append(uploadPanel(section));
-		if (!state.online) side.append(adminOfflinePanel(section));
+		if (!state.online && admin) side.append(adminOfflinePanel(section));
 		side.append(list);
 		win.video = video;
 
