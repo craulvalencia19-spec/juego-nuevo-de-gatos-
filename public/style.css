@@ -57,7 +57,7 @@ button { font-family: inherit; }
 
 .btn:hover, .icon-btn:hover { color: #fff; border-color: var(--cyan); box-shadow: 0 0 22px rgba(125, 249, 255, 0.25); }
 .btn:focus-visible, .icon-btn:focus-visible, .role:focus-visible, .vpick:focus-visible, .art-thumb:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
-.btn:disabled { opacity: 0.5; cursor: wait; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .btn.primary {
 	background: linear-gradient(135deg, #2f7bff, #1ec8ff);
