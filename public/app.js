@@ -686,12 +686,6 @@
 		side.append(list);
 		win.video = video;
 
-		video.addEventListener('error', () => {
-			if (!video.getAttribute('src')) return;
-			empty.textContent = 'No se pudo cargar este video. Revisa que el archivo exista en la carpeta assets o vuelve a subirlo.';
-			empty.classList.remove('hidden');
-		});
-		video.addEventListener('loadeddata', () => { empty.classList.toggle('hidden', items.length > 0); });
 		const select = (it) => {
 			win.selectId = it.id;
 			video.src = it.url;
