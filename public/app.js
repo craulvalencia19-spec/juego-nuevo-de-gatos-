@@ -773,7 +773,7 @@
 		}
 	};
 	$('#skip').addEventListener('click', () => window.introFinished());
-	setTimeout(() => window.introFinished(), 45000); // red de seguridad: la intro dura unos 20 s
+	setTimeout(() => window.introFinished(), 90000); // red de seguridad: bienvenida (~15 s) + intro (~20 s)
 
 	/* ===================== Arranque ===================== */
 	(async () => {

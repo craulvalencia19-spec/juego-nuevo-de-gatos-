@@ -685,3 +685,30 @@ body[data-screen="galaxy"] .hints { display: flex; }
 .gh-f span { display: block; margin-bottom: 0.25rem; font-size: 0.7rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--cyan); }
 .gh-in { width: 100%; padding: 0.55rem 0.7rem; font: inherit; color: var(--ink); background: rgba(1, 8, 22, 0.85); border: 1px solid var(--line); border-radius: 8px; }
 .gh-in:focus { outline: none; border-color: var(--cyan); }
+
+/* ===== Bienvenida 3D (primera pantalla) ===== */
+#bienvenida {
+	position: fixed;
+	inset: 0;
+	z-index: 10000;
+	background: #0c1b33;
+	overflow: hidden;
+	transition: opacity 0.8s ease;
+}
+#bienvenida.bye { opacity: 0; pointer-events: none; }
+#bvSkip {
+	position: fixed;
+	right: 1.25rem;
+	bottom: 1.25rem;
+	z-index: 10001;
+	background: rgba(12, 27, 51, 0.55);
+	border: 1px solid rgba(255, 255, 255, 0.35);
+	color: #dfe8f6;
+	padding: 0.55rem 1.1rem;
+	font-size: 0.72rem;
+	letter-spacing: 0.2em;
+	text-transform: uppercase;
+	cursor: pointer;
+	border-radius: 8px;
+}
+#bvSkip:hover { color: #fff; border-color: #ffd166; }
