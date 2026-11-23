@@ -19,7 +19,7 @@ Sin servidor (Live Preview): el botón Administrador también pide la contraseñ
 solo sirve para ver el diseño: lo que pruebes ahí no se publica.
 
 ## Tráiler incluido
-El tráiler (`public/assets/trailer.mp4`, 1280×720) ya viene dentro del proyecto y aparece solo en la carpeta Tráiler,
+El tráiler (`public/assets/trailer.mp4`, 640×360, 2:32) ya viene dentro del proyecto y aparece solo en la carpeta Tráiler,
 sin GitHub ni subidas. Para cambiarlo, reemplaza ese archivo (mismo nombre) o edita `builtinTrailer` en `public/content.js`.
 
 ## Publicar (admin) – subir el APK
@@ -52,3 +52,8 @@ La página de GitHub Pages NO recibe archivos: usa siempre este modo.
 ## Sin servidor (Live Server, puerto 3000, etc.)
 El administrador elige el video o el APK y pulsa **Guardar**. Se guarda en ese navegador de ese computador (sin límite práctico de tamaño).
 Para que lo vean todos los usuarios, usa INICIAR.bat (servidor): ahí lo que subas queda publicado para todos.
+
+## Importante al copiar o comprimir el proyecto
+Los videos/APK que subes como administrador se guardan en la carpeta `data/` (no en `public/`).
+Si pasas el proyecto en un zip sin `data/`, esos archivos se pierden. Haz copia de `data/` junto con el resto.
+El tráiler y el video del gato ya están dentro de `public/assets/` (trailer.mp4 y fondo.mp4), así que siempre aparecen.
